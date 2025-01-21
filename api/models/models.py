@@ -4,7 +4,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, model_validator, EmailStr
 
-from sqlalchemy import Column, String, UUID, DATE, Boolean, ForeignKey, create_engine, Enum
+from sqlalchemy import Column, String, UUID, DATE, Boolean, ForeignKey, create_engine
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
 from api.tools.password_tools import PasswordValidatorController, PasswordHashController
@@ -141,7 +141,7 @@ class TaskCreate(TaskInput):
 
 class TaskRequest(TaskCreate):
     """
-    Модель данных длясоздания записи в db
+    Модель данных для создания записи в db
     """
     user_id: uuid.UUID = Field(title='Идентификатор пользователя', description='Идентификатор автора задачи')
 

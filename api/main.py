@@ -200,7 +200,7 @@ async def get_user(current_user=Depends(authenticate)):
         logger.error(
             f'Во время работы "get_user" произошла ошибка: {error}. Данные запроса: {current_user.user_id}'
         )
-        return Response({'error': str(error)} if DEBUG else None, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return JSONResponse({'error': str(error)} if DEBUG else None, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
     return JSONResponse(user_data, status_code=status.HTTP_200_OK)
 
 
@@ -219,7 +219,7 @@ async def update_user(user: BaseUser, current_user=Depends(authenticate)):
         logger.error(
             f'Во время работы "update_user" произошла ошибка: {error}. Данные запроса: {current_user.user_id}'
         )
-        return Response({'error': str(error)} if DEBUG else None, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return JSONResponse({'error': str(error)} if DEBUG else None, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
     return JSONResponse(data, status_code=status.HTTP_200_OK)
 
 
@@ -236,7 +236,7 @@ async def create_user(user: UserRequest):
         del data['password']
     except Exception as error:
         logger.error(f'Во время работы "create_user" произошла ошибка: {error}.')
-        return Response({'error': str(error)} if DEBUG else None, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return JSONResponse({'error': str(error)} if DEBUG else None, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
     return JSONResponse(data, status_code=status.HTTP_201_CREATED)
 
 
