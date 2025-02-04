@@ -1,10 +1,13 @@
+from api.models.models import Base
+
+
 class ApiSerializers:
     """
     Набор инструментов для преобразования данных
     """
 
     @staticmethod
-    def serialize_task(task) -> dict:
+    def serialize_task(task: Base) -> dict:
         """
         Преобразует задачу из объекта в словарь с данными её полей
         :param task: Объект задачи
@@ -27,7 +30,7 @@ class ApiSerializers:
         return {str(field): str(value) for field, value in data.items()}
 
     @staticmethod
-    def items_attr(data: list | set, obj) -> dict:
+    def items_attr(data: list | set, obj: Base) -> dict:
         """
         На основе списка полей data получает одноимённые атрибуты у obj и формирует словарь
         :param data: Список полей

@@ -12,18 +12,18 @@ from starlette.responses import JSONResponse, Response
 
 from api.config import DEFAULT_PATH, DEBUG
 from api.db.manager import Manager, UserManager
-from api.models.models import TaskRequiredInput, TaskInput, TaskCreate, BaseUser, UserRequest, UserDB, TaskDB
+from api.models.models import TaskRequiredInput, TaskInput, TaskCreate, BaseUser, UserRequest, UserDB, TaskDB, Base, \
+    ReportCreate, ReportDB, ReportStatus, Session
 from api.tools.api_tools import ApiSerializers
 
 
 logger = logging.getLogger(__name__)
 security = HTTPBasic()
 app = FastAPI()
-manager: Manager = Manager()
 serializer_tool = ApiSerializers()
 
 
-def authenticate(credentials: HTTPBasicCredentials = Depends(security)):
+def authenticate(credentials: HTTPBasicCredentials = Depends(security)) -> Base:
     """
     Проверка аутентификации пользователя с использованием базовой аутентификации (HTTP Basic Authentication).
     Эта функция извлекает учетные данные (имя пользователя и пароль) из запроса, выполняет проверку
@@ -33,14 +33,14 @@ def authenticate(credentials: HTTPBasicCredentials = Depends(security)):
     - Имя пользователя и пароль должны быть переданы через HTTP заголовок `Authorization` в формате Basic Auth.
     - Пароль должен быть правильно сопоставлен с сохраненным значением в базе данных.
     **Возвращаемое значение:**
-    - Если аутентификация успешна, возвращается объект пользователя
+    - Если аутентификация успешна, возвращается объект модели пользователя
     """
     username = credentials.username
     password = credentials.password
-    user_manager = UserManager()
+    user_manager = UserManager(Session())
     user = user_manager.authenticate(username, password)
     if not user:
-        logger.warning(f"Попытка входа пользователем {username}. {datetime.datetime.now()}")
+        logger.warning(f"Неудачная попытка входа пользователем {username}. {datetime.datetime.now()}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid credentials",
@@ -49,22 +49,36 @@ def authenticate(credentials: HTTPBasicCredentials = Depends(security)):
     return user
 
 
+def get_manager():
+    """
+    :return: Объект подключения к db
+    """
+    db_manager = Manager(Session())
+    try:
+        yield db_manager
+    except Exception as error:
+        logger.critical(f'Проблемы во время работы с базой {error}')
+    finally:
+        db_manager.close()
+
+
 # ------------------------------ Эндпоинты взаимодействия с задачами ---------------------------------------------------
 @app.get(DEFAULT_PATH + 'tasks/{task_id}')
-async def get_task(task_id: str, current_user=Depends(authenticate)):
+async def get_task(task_id: str, current_user=Depends(authenticate), manager=Depends(get_manager)):
     """
     Функция для возврата данных одной задачи
     :param task_id: Идентификатор задачи
-    :param current_user: Авторизованный пользователь, от которого пришёл запрос
+    :param current_user: Объект записи текущего аутентифицированного пользователя из DB
+    :param manager: Объект подключения к db
     :return: Данные в виде словаря о запрошенной задаче
     """
     try:
-        task = manager.filter(TaskDB, [
+        task = manager.get(TaskDB, [
             TaskDB.task_id == uuid.UUID(task_id), TaskDB.user_id == current_user.user_id
         ])
         if not task:
             return Response(status_code=status.HTTP_404_NOT_FOUND)
-        task = serializer_tool.serialize_task(task[0])
+        task = serializer_tool.serialize_task(task)
     except Exception as error:
         logger.error(
             f'Во время работы "get_task" произошла ошибка: {error}. Данные запроса {task_id}, {current_user.user_id}'
@@ -74,10 +88,11 @@ async def get_task(task_id: str, current_user=Depends(authenticate)):
 
 
 @app.get(f'{DEFAULT_PATH}tasks/')
-async def get_tasks(current_user=Depends(authenticate)):
+async def get_tasks(current_user=Depends(authenticate), manager=Depends(get_manager)):
     """
     Возвращает все задачи пользователя
-    :param current_user: Авторизованный пользователь, от которого пришёл запрос
+    :param current_user: Объект записи текущего аутентифицированного пользователя из DB
+    :param manager: Объект подключения к db
     :return: Словарь всех задач пользователя
     """
     try:
@@ -94,11 +109,12 @@ async def get_tasks(current_user=Depends(authenticate)):
 
 
 @app.delete(DEFAULT_PATH + 'tasks/{task_id}')
-async def delete_tasks(task_id: str, current_user=Depends(authenticate)):
+async def delete_tasks(task_id: str, current_user=Depends(authenticate), manager=Depends(get_manager)):
     """
     Функция для удаления задачи по её идентификатору
     :param task_id: Идентификатор задачи
-    :param current_user: Авторизованный пользователь, от которого пришёл запрос
+    :param current_user: Объект записи текущего аутентифицированного пользователя из DB
+    :param manager: Объект подключения к db
     :return: Ответ 204 в случае успеха удаления
     """
     try:
@@ -112,23 +128,25 @@ async def delete_tasks(task_id: str, current_user=Depends(authenticate)):
 
 
 @app.put(DEFAULT_PATH + 'tasks/{task_id}')
-async def full_update_task(task_id: str, task: TaskRequiredInput, current_user=Depends(authenticate)):
+async def full_update_task(
+        task_id: str, task: TaskRequiredInput, current_user=Depends(authenticate), manager=Depends(get_manager)
+):
     """
     Функция для полноформатного обновления данных задачи. Поле expired будет занесено в базу на основе логики валидации
     :param task_id: Идентификатор задачи для обновления
     :param task: Данные задачи для обновления
-    :param current_user: Авторизованный пользователь, от которого пришёл запрос
+    :param current_user: Объект записи текущего аутентифицированного пользователя из DB
+    :param manager: Объект подключения к db
     :return:
     """
     try:
-        db_task = manager.filter(TaskDB, [
+        db_task = manager.get(TaskDB, [
             TaskDB.task_id == uuid.UUID(task_id), TaskDB.user_id == current_user.user_id
         ])
         if not db_task:
             return Response(status_code=status.HTTP_404_NOT_FOUND)
         data = serializer_tool.items_attr(task.model_fields_set, task)
-        task = db_task[0]
-        manager.save(task, data)
+        manager.save(db_task, data)
     except Exception as error:
         logger.error(
             f'Во время работы "full_update_task" произошла ошибка: {error}. '
@@ -139,23 +157,23 @@ async def full_update_task(task_id: str, task: TaskRequiredInput, current_user=D
 
 
 @app.patch(DEFAULT_PATH + 'tasks/{task_id}')
-async def update_task(task_id: str, task: TaskInput, current_user=Depends(authenticate)):
+async def update_task(task_id: str, task: TaskInput, current_user=Depends(authenticate), manager=Depends(get_manager)):
     """
     Функция для частичного обновления данных задачи. Требует stop_date
     :param task_id: Идентификатор задачи для обновления
     :param task: Данные задачи для обновления
-    :param current_user: Авторизованный пользователь, от которого пришёл запрос
+    :param current_user: Объект записи текущего аутентифицированного пользователя из DB
+    :param manager: Объект подключения к db
     :return:
     """
     try:
-        db_task = manager.filter(TaskDB, [
+        db_task = manager.get(TaskDB, [
             TaskDB.task_id == uuid.UUID(task_id), TaskDB.user_id == current_user.user_id
         ])
         if not db_task:
             return Response(status_code=status.HTTP_404_NOT_FOUND)
         data = serializer_tool.items_attr(task.model_fields_set, task) | {"user_id": current_user.user_id}
-        task = db_task[0]
-        manager.save(task, data)
+        manager.save(db_task, data)
     except Exception as error:
         logger.error(
             f'Во время работы "update_task" произошла ошибка: {error}. Данные запроса: {task_id} {current_user.user_id}'
@@ -165,11 +183,12 @@ async def update_task(task_id: str, task: TaskInput, current_user=Depends(authen
 
 
 @app.post(f"{DEFAULT_PATH}tasks/")
-async def create_task(task: TaskCreate, current_user=Depends(authenticate)):
+async def create_task(task: TaskCreate, current_user=Depends(authenticate), manager=Depends(get_manager)):
     """
     Функция для создания задачи
     :param task: Объект задачи с входными данными
-    :param current_user: Авторизованный пользователь, от которого пришёл запрос
+    :param current_user: Объект записи текущего аутентифицированного пользователя из DB
+    :param manager: Объект подключения к db
     :return: Словарь с данными о созданной задаче
     """
     try:
@@ -189,7 +208,7 @@ async def create_task(task: TaskCreate, current_user=Depends(authenticate)):
 async def get_user(current_user=Depends(authenticate)):
     """
     Функция для получения данных пользователя
-    :param current_user: Авторизованный пользователь, от которого пришёл запрос
+    :param current_user: Объект записи текущего аутентифицированного пользователя из DB
     :return: Словарь с данными пользователя
     """
     try:
@@ -205,11 +224,12 @@ async def get_user(current_user=Depends(authenticate)):
 
 
 @app.put(f'{DEFAULT_PATH}users/')
-async def update_user(user: BaseUser, current_user=Depends(authenticate)):
+async def update_user(user: BaseUser, current_user=Depends(authenticate), manager=Depends(get_manager)):
     """
     Функция для полноформатного обновления данных пользователя.
-    :param user: Объект модели с данными нового пользователя
-    :param current_user: Авторизованный пользователь, от которого пришёл запрос
+    :param user: Объект модели с данными пользователя
+    :param current_user: Объект записи текущего аутентифицированного пользователя из DB
+    :param manager: Объект подключения к db
     :return: Словарь с данными пользователя
     """
     try:
@@ -224,9 +244,11 @@ async def update_user(user: BaseUser, current_user=Depends(authenticate)):
 
 
 @app.post(f'{DEFAULT_PATH}users/')
-async def create_user(user: UserRequest):
+async def create_user(user: UserRequest, manager=Depends(get_manager)):
     """
     Функция для создания пользователя. Не требует авторизации
+    :param user: Объект модели с данными нового пользователя
+    :param manager: Объект подключения к db
     :return: Словарь с данными пользователя
     """
     try:
@@ -241,56 +263,74 @@ async def create_user(user: UserRequest):
 
 
 # ------------------------------------ Асинхронное выполнение задач на "сервере" ---------------------------------------
-"""
-Реализовано всё не особо красиво, так как я не успевал сделать иначе.
-"""
-
-
-EXTRA = {}
-
-
-def background_task(limit: int = 120):
+def simulation_long_process(record_id: Base):
     """
-    функция, симулирующая бурную деятельность сервера
-    :param limit: Верхняя граница времени выполнения задачи. По совместительству ключ для словаря
-    :return:
+    Симулирует выполнение длительной задачи. Ход выполнения отмечается в статусе объекта, над которым выполняется задача
+    :param record_id: Идентификатор отчёта
     """
-    minimum_limit = 30
-    if limit < minimum_limit:
-        limit, minimum_limit = minimum_limit, limit
-    elif limit == minimum_limit:
-        limit += 5
-    EXTRA[limit] = 'Start'
-    sleep(random.randint(minimum_limit, limit))
-    EXTRA[limit] = 'Complete'
-    sleep(600)
-    EXTRA[limit] = 'To be removed'
-    sleep(120)
-    del EXTRA[limit]
+    manager = Manager(Session())
+    record = manager.get(ReportDB, [ReportDB.report_id == record_id])
+    try:
+        data = {'status': record.status}
+        if record:
+            sleep(random.randint(2, 5))
+            data['status'] = ReportStatus.RUNNING
+            record = manager.save(record, data)
+            sleep(random.randint(5, 10))
+            failed_status_value = random.randint(0, 10)
+            data['status'] = ReportStatus.COMPLETED
+            if failed_status_value in [1, 3, 5]:
+                data['status'] = ReportStatus.FAILED
+            manager.save(record, data)
+    except Exception as error:
+        logger.error(f'Во время симуляции длительной задачи произошла неизвестная ошибка: {error}')
+    finally:
+        manager.close()
+
+@app.post(f'{DEFAULT_PATH}reports/')
+async def create_report(report: ReportCreate, background_tasks: BackgroundTasks, current_user=Depends(authenticate),
+        manager=Depends(get_manager)):
+    """
+    Функция для получения данных для создания отчёта. Основные параметры - start_date и stop_date
+    :param report: Данные для создания отчёта
+    :param background_tasks: Менеджер фоновых задач для запуска обработки отчёта.
+    :param current_user: Объект записи текущего аутентифицированного пользователя из DB
+    :param manager: Объект подключения к db
+    :return: Response 200 с id и статусом отчёта или Response 500 в случае ошибок
+    """
+    try:
+        data = serializer_tool.items_attr(report.model_fields_set, report)
+        data |= {'user_id': current_user.user_id, 'name': report.name}
+        report = manager.create(ReportDB, data)
+        background_tasks.add_task(simulation_long_process, report.report_id)
+        data = serializer_tool.items_str({'report_id': report.report_id, 'status': report.status.value})
+    except Exception as error:
+        logger.error(f'Во время создания отчёта произошла неизвестная ошибка {error}')
+        return JSONResponse({'error': str(error)} if DEBUG else None, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    return JSONResponse(data, status_code=status.HTTP_201_CREATED)
 
 
-@app.post(DEFAULT_PATH + 'async/{smth_value_id}')
-async def async_simulator_create(smth_value_id: int, background_tasks: BackgroundTasks):
+@app.get(f"{DEFAULT_PATH}reports/" + '{report_id}/')
+async def check_report(report_id: uuid.UUID, current_user=Depends(authenticate), manager=Depends(get_manager)):
     """
-    Запускает симуляцию выполнения тяжелой задачи на "сервере"
-    :param smth_value_id: Верхняя граница времени на выполнение задачи
-    :param background_tasks: Объект для корректной работы инициализации очереди задач
-    :return: Словарь с полученным идентификатором
-    """
-    background_tasks.add_task(background_task, smth_value_id)
-    return JSONResponse({"smth_value_id": smth_value_id})
+    Функция для проверки состояние обработки задачи на "сервере"
+    :param report_id: Идентификатор задачи для проверки
+    :param current_user: Объект записи текущего аутентифицированного пользователя из DB
+        :param manager: Объект подключения к db
 
-@app.get(DEFAULT_PATH + 'async/{smth_value_id}/check/')
-async def async_simulator(smth_value_id: int, background_tasks: BackgroundTasks):
+    :return: Идентификатор задачи и её текущий статус
     """
-    Функция для проверки статуса задачи на основе полученного идентификатора задачи
-    :param smth_value_id: Идентификатор задачи для проверки
-    :param background_tasks: Объект для корректной работы инициализации очереди задач
-    :return: Словарь с информацией о задаче
-    """
-    return JSONResponse({"smth_value_id": EXTRA.get(smth_value_id, "Для такого ключа не обнаружена задача")})
-
+    try:
+        report = manager.get(ReportDB, [
+            ReportDB.report_id == report_id, ReportDB.user_id == current_user.user_id
+        ])
+    except Exception as error:
+        logger.error(f'Во время получения данных о задаче {report_id} произошла неизвестная ошибка {error}')
+        return JSONResponse({'error': str(error)} if DEBUG else None, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    return JSONResponse(
+        {"report_id": str(report.report_id), 'status': report.status.value}, status_code=status.HTTP_200_OK
+    )
 
 
 if __name__ == '__main__':
-    uvicorn.run('main:app', host='0.0.0.0', port=8000)
+    uvicorn.run('main:app', host='0.0.0.0', port=8000, reload=True)

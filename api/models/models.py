@@ -1,13 +1,28 @@
-import uuid
 import enum
+import inspect
+import uuid
 from datetime import datetime
 
 from pydantic import BaseModel, Field, model_validator, EmailStr
 
-from sqlalchemy import Column, String, UUID, DATE, Boolean, ForeignKey, create_engine
-from sqlalchemy.orm import declarative_base, relationship, sessionmaker
+from sqlalchemy import Column, String, UUID, DATE, Boolean, ForeignKey, create_engine, Enum
+from sqlalchemy.orm import declarative_base, relationship, sessionmaker, validates
 
 from api.tools.password_tools import PasswordValidatorController, PasswordHashController
+
+
+def transform_date(date: str) -> datetime.date:
+    """
+    Преобразует полученный строковый формат полей даты к объекту date.
+    Проверяет, не превышает ли дата начала дату окончания
+    При фактическом завершении задачи позже установленного срока, автоматически устанавливает статус просрочки.
+    :param date: Строка времени
+    :return: Объект времени
+    """
+    try:
+        return datetime.date(*[int(obj) for obj in date.split("-")])
+    except ValueError:
+        raise ValueError(f"Ошибка формата даты. Ожидается ГГГГ-ММ-ДД. Получено: {date}")
 
 
 # ------------------------------------------------ Модели Pydantic -----------------------------------------------------
@@ -91,19 +106,6 @@ class TaskInput(BaseTask):
         Преобразует полученные строковые значения временных полей в объекты даты.
         :return: Объект модели
         """
-        def transform_date(date: str) -> datetime.date:
-            """
-            Преобразует полученный строковый формат полей даты к объекту date.
-            Проверяет, не превышает ли дата начала дату окончания
-            При фактическом завершении задачи позже установленного срока, автоматически устанавливает статус просрочки.
-            :param date: Строка времени
-            :return: Объект времени
-            """
-            try:
-                return datetime.date(*[int(obj) for obj in date.split("-")])
-            except ValueError:
-                raise ValueError(f"Ошибка формата даты. Ожидается ГГГГ-ММ-ДД. Получено: {date}")
-
         if isinstance(self.stop_date, str):
             self.stop_date = transform_date(self.stop_date)
         if isinstance(self.start_date, str):
@@ -184,14 +186,47 @@ class UserRequest(BaseUser):
         extra = "forbid"
 
 
+def generate_report_name() -> str:
+    """
+    Устанавливает name по умолчанию, если не получено значение от пользователя
+    """
+    return f'report_{datetime.now()}'
+
+
+class ReportCreate(BaseModel):
+    name: str = Field(
+        default_factory=generate_report_name,
+        description='Имя отчёта',
+    )
+    start_date: datetime = Field(
+        title='Дата начала периода формирования отчёта',
+        description='Дата начала периода формирования отчёта',
+    )
+    stop_date: datetime = Field(
+        title='Дата окончания периода формирования отчёта',
+        description='Дата окончания периода формирования отчёта',
+    )
+
+    @model_validator(mode='after')
+    def date_fields_validator(self):
+        """
+        Преобразует полученные строковые значения временных полей в объекты даты.
+        :return: Объект модели
+        """
+        if isinstance(self.stop_date, str):
+            self.stop_date = transform_date(self.stop_date)
+        if isinstance(self.start_date, str):
+            self.start_date = transform_date(self.start_date)
+        if self.stop_date < self.start_date:
+            raise ValueError(f"stop_date '{self.stop_date}' не может быть меньше start_date '{self.start_date}'!")
+        return self
+
+    class Config:
+        extra = "forbid"
+
+
 # ------------------------------------------------ Модели SQL Alchemy и настройки к ним --------------------------------
 Base = declarative_base()
-
-
-class MysteryStatusChoices(enum.Enum):
-    Sleep = "Sleep"
-    InProgress = "In Progress"
-    Completed = "Completed"
 
 
 class TaskDB(Base):
@@ -215,9 +250,27 @@ class UserDB(Base):
     name: str = Column(String, nullable=True)
     email: str = Column(String, nullable=True)
     tasks = relationship('TaskDB', back_populates='user')
+    reports = relationship('ReportDB', back_populates='user')
 
 
-engine = create_engine('sqlite:///db/api_tasks.db')
+class ReportStatus(enum.Enum):
+    COMPLETED = 'Completed'
+    FAILED = 'Failed' # Не используется
+    RUNNING = 'Running'
+    CREATED = 'Created'
+
+
+class ReportDB(Base):
+    __tablename__ = 'reports'
+    report_id: uuid.UUID = Column(UUID(as_uuid=True), primary_key=True, index=True, default=uuid.uuid4)
+    name: str = Column(String, nullable=False)
+    start_date: datetime.date = Column(DATE, default=datetime.today, nullable=False)
+    stop_date: datetime.date = Column(DATE, nullable=False)
+    user_id: uuid.UUID = Column(UUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False)
+    user = relationship("UserDB", back_populates='reports')
+    status = Column(Enum(ReportStatus), nullable=False, default=ReportStatus.CREATED)
+
+
+engine = create_engine('sqlite:///db/api_tasks.db', connect_args={"check_same_thread": False})
 Base.metadata.create_all(engine)
-Session = sessionmaker(bind=engine)
-session = Session()
+Session = sessionmaker(bind=engine, autocommit=False, autoflush=False)
